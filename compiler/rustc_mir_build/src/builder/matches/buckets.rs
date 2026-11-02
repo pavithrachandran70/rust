@@ -1,7 +1,9 @@
 use std::cmp::Ordering;
 
+use rustc_apfloat::Float;
 use rustc_data_structures::fx::FxIndexMap;
 use rustc_middle::mir::Place;
+use rustc_middle::ty::{self, Value};
 use rustc_span::{bug, span_bug};
 use tracing::debug;
 
@@ -326,12 +328,25 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             )
             | (
                 TestKind::ScalarEq { value: test_val, .. },
-                TestableCase::Constant {
-                    value: case_val,
-                    kind: PatConstKind::Float | PatConstKind::Other,
-                },
+                TestableCase::Constant { value: case_val, kind: PatConstKind::Other },
             ) => {
                 if test_val == case_val {
+                    fully_matched = true;
+                    Some(TestBranch::Success)
+                } else {
+                    fully_matched = false;
+                    Some(TestBranch::Failure)
+                }
+            }
+
+            (
+                TestKind::ScalarEq { value: test_val, .. },
+                TestableCase::Constant { value: case_val, kind: PatConstKind::Float },
+            ) => {
+                // `Value` equality is bitwise, but the lowered test is IEEE `==`.
+                // `0.0` and `-0.0` therefore both take the success arm. Leaving the
+                // other zero on the failure arm skips it after a failed guard.
+                if test_val == case_val || float_zeros_share_eq_test(&test_val, &case_val) {
                     fully_matched = true;
                     Some(TestBranch::Success)
                 } else {
@@ -380,5 +395,28 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         }
 
         ret
+    }
+}
+
+/// `true` when both constants are floating-point zeros, including opposite signs.
+///
+/// Those values are not the same [`Value`], but float pattern tests use IEEE
+/// equality, so one equality test covers both.
+fn float_zeros_share_eq_test(test_val: &Value<'_>, case_val: &Value<'_>) -> bool {
+    if test_val.ty != case_val.ty {
+        return false;
+    }
+    let ty::Float(fty) = test_val.ty.kind() else {
+        return false;
+    };
+    let (Some(test_leaf), Some(case_leaf)) = (test_val.try_to_leaf(), case_val.try_to_leaf())
+    else {
+        return false;
+    };
+    match fty {
+        ty::FloatTy::F16 => test_leaf.to_f16().is_zero() && case_leaf.to_f16().is_zero(),
+        ty::FloatTy::F32 => test_leaf.to_f32().is_zero() && case_leaf.to_f32().is_zero(),
+        ty::FloatTy::F64 => test_leaf.to_f64().is_zero() && case_leaf.to_f64().is_zero(),
+        ty::FloatTy::F128 => test_leaf.to_f128().is_zero() && case_leaf.to_f128().is_zero(),
     }
 }
