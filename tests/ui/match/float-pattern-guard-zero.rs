@@ -1,3 +1,6 @@
+//! Regression test for https://github.com/rust-lang/rust/issues/165311.
+//! Regression from https://github.com/rust-lang/rust/pull/122459.
+
 //@ run-pass
 
 #![forbid(unsafe_code)]
